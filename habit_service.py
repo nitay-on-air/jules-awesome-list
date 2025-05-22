@@ -187,28 +187,105 @@ def log_habit_completion(
         shelf[DB_KEY_HABIT_LOGS] = logs
 
         # Update Habit Statistics (Simplified for 'daily' check-off)
-        if habit.goal_type == "daily" and is_completed_for_log_date:
-            if habit.last_completed_date is None: # First completion ever
-                habit.current_streak = 1
-            elif log_date == habit.last_completed_date + timedelta(days=1): # Consecutive day
-                habit.current_streak += 1
-            elif log_date > habit.last_completed_date + timedelta(days=1): # Missed days
-                habit.current_streak = 1 # Reset and start new streak
-            elif log_date == habit.last_completed_date: # Logged again for the same day
-                # Current streak already counted for this day, no change.
-                pass 
-            else: # Logged for a past date out of sequence, or an error.
-                  # More complex backfill logic is deferred. For now, don't change current_streak.
-                  # This scenario implies the user is manually logging past dates, which might
-                  # require a separate function to rebuild streaks if accuracy is paramount.
-                  # For now, this simple increment only correctly handles linear progression.
-                pass
+        # --- Update Habit Statistics ---
+        made_changes_to_habit = False
+        if is_completed_for_log_date: # Only update streaks if completed
+            if habit.goal_type == "daily":
+                if habit.last_completed_date is None:
+                    habit.current_streak = 1
+                elif log_date == habit.last_completed_date + timedelta(days=1):
+                    habit.current_streak += 1
+                elif log_date > habit.last_completed_date + timedelta(days=1):
+                    habit.current_streak = 1 
+                elif log_date == habit.last_completed_date:
+                    pass # Already counted for this day
+                else: # Past date, out of sequence - simple logic: reset if not same day
+                    habit.current_streak = 1
+                
+                habit.last_completed_date = log_date
+                made_changes_to_habit = True
+
+            elif habit.goal_type == "specific_weekdays":
+                selected_days = habit.goal_details.get("selected_days", [])
+                if not selected_days or log_date.weekday() not in selected_days:
+                    # Logged on a non-scheduled day, or no schedule. Don't update streak.
+                    pass
+                else:
+                    if habit.last_completed_date is None:
+                        habit.current_streak = 1
+                    else:
+                        # Find previous scheduled day
+                        temp_date = log_date - timedelta(days=1)
+                        previous_scheduled_day_found = False
+                        for _ in range(7): # Check back up to 7 days for simplicity
+                            if temp_date.weekday() in selected_days:
+                                if temp_date == habit.last_completed_date:
+                                    habit.current_streak += 1
+                                    previous_scheduled_day_found = True
+                                elif temp_date < habit.last_completed_date: # last completion was even more recent than expected
+                                     previous_scheduled_day_found = True # Don't break streak, but don't increment either if current log_date is not the *next*
+                                     if log_date > habit.last_completed_date: # only increment if log_date is a new valid day
+                                         habit.current_streak = 1 # effectively, if not contiguous, reset
+                                else: # Missed the previous scheduled day
+                                    habit.current_streak = 1
+                                    previous_scheduled_day_found = True
+                                break
+                            temp_date -= timedelta(days=1)
+                        
+                        if not previous_scheduled_day_found and log_date > (habit.last_completed_date or date.min) : # If no previous scheduled day found within a week, and it's not a past log
+                            habit.current_streak = 1 # Start new streak
+                        elif log_date == habit.last_completed_date: # Logged again for same day
+                            pass
+
+
+                    habit.last_completed_date = log_date
+                    made_changes_to_habit = True
             
-            habit.last_completed_date = log_date
-            if habit.current_streak > habit.longest_streak:
+            elif habit.goal_type in ["times_per_week", "times_per_month"]:
+                target_count = habit.goal_details.get("target_count", 1)
+                
+                # Determine period boundaries
+                is_new_period = False
+                if habit.last_completed_date: # last_completed_date here tracks the last date a log contributed to a *completed* period
+                    if habit.goal_type == "times_per_week":
+                        log_year, log_week, _ = log_date.isocalendar()
+                        last_year, last_week, _ = habit.last_completed_date.isocalendar()
+                        if log_year > last_year or log_week > last_week:
+                            is_new_period = True
+                    elif habit.goal_type == "times_per_month":
+                        if log_date.year > habit.last_completed_date.year or log_date.month > habit.last_completed_date.month:
+                            is_new_period = True
+                else: # No last_completed_date, so it's effectively a new period for completions
+                    is_new_period = True
+
+                if is_new_period:
+                    # Before resetting, check if the previous period's goal was met for streak counting
+                    if habit.last_completed_date and habit.completions_in_current_period >= target_count:
+                        # This logic is simplified: assumes contiguity if last period was completed.
+                        # A more robust check would ensure the last_completed_date's period is immediately before current.
+                        habit.current_streak += 1
+                    elif habit.last_completed_date and habit.completions_in_current_period < target_count:
+                        habit.current_streak = 0 # Previous period's goal not met
+                    else: # First ever completion contributing to a period
+                         habit.current_streak = 0 # Will be 1 if this period completes
+                    
+                    habit.completions_in_current_period = 0 # Reset for the new period
+
+                habit.completions_in_current_period += 1
+                
+                if habit.completions_in_current_period >= target_count:
+                    # Mark this period as "streak point earned"
+                    # If current_streak was 0 (either first time or reset), set to 1
+                    if habit.current_streak == 0 : habit.current_streak = 1 
+                    # If already >0, it means the previous period was a success, so this continues it.
+                    # The actual increment for *this successful period* will happen at the start of the *next* period.
+                    habit.last_completed_date = log_date # Mark this date as contributing to a successful period
+                made_changes_to_habit = True
+
+            if made_changes_to_habit and habit.current_streak > habit.longest_streak:
                 habit.longest_streak = habit.current_streak
             
-            # Update the habit in the habits list
+            # Update the habit in the habits list if any attribute changed
             habits_list = shelf.get(DB_KEY_HABITS, [])
             for i, h_in_shelf in enumerate(habits_list):
                 if h_in_shelf.id == habit_id:

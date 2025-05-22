@@ -239,3 +239,37 @@ class HabitLog:
     measured_value: Optional[float] = None # e.g., 6 for "6 glasses of water logged"
     
     entry_creation_time: datetime = field(default_factory=datetime.now) # When the log itself was created/updated
+
+# --- Gamification Data Classes ---
+
+@dataclass
+class UserProfileGamification:
+    # Using a fixed ID if we assume one profile per app installation (single user context for now)
+    # Or, if preparing for multi-user, this would be linked to a user_id.
+    # For now, let's assume a global profile for simplicity with a fixed ID.
+    id: str = "default_user_gamification_profile" 
+    xp_points: int = 0
+    level: int = 1
+    # Optional: could store last_xp_awarded_action_type or timestamp if needed for specific logic
+    last_updated: datetime = field(default_factory=datetime.now)
+
+@dataclass
+class BadgeDefinition:
+    id: str # e.g., "first_revision", "topic_master_10", "streak_7_days"
+    name: str
+    description: str
+    icon_url: Optional[str] = None # Placeholder for an image/icon link
+    # Criteria can be complex. For now, store as a descriptive string or simple dict.
+    # e.g., {"action_type": "topic_revision", "count": 1}
+    # or {"action_type": "streak_length", "streak_type": "daily", "length": 7}
+    criteria: Dict[str, Any] = field(default_factory=dict) 
+    xp_bonus: int = 0 # Optional XP awarded when badge is earned
+
+@dataclass
+class UserEarnedBadge:
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    user_profile_id: str # Should link to UserProfileGamification.id (e.g., "default_user_gamification_profile")
+    badge_id: str       # Links to BadgeDefinition.id
+    earned_date: datetime = field(default_factory=datetime.now)
+    # Optional: could store context, e.g., which specific topic earned them "topic_master_10" if badge is repeatable
+    # context: Optional[Dict[str, Any]] = field(default_factory=dict) 
